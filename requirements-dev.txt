@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest==9.1.1
+chispa==0.12.0
+ipykernel==7.4.0
