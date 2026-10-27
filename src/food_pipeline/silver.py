@@ -1,5 +1,10 @@
-"""Silver cleaning: pure DataFrame -> DataFrame functions, one per data issue found in profiling."""
-from pyspark.sql import DataFrame
+"""Silver layer.
+
+Cleaning and hashing are pure DataFrame -> DataFrame functions, one per data issue found in profiling.
+`merge_into_silver` is the only function that writes.
+"""
+from delta.tables import DeltaTable
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import StringType
 
@@ -23,6 +28,15 @@ COLUMN_TYPES = {
     "latitude": "double",
     "longitude": "double",
 }
+
+# The respondent's answers after cleaning. Lineage (_*) and derived income columns are excluded,
+# so the same answers always give the same hash whichever batch or file they arrived in.
+HASH_COLUMNS = [
+    "age", "gender", "marital_status", "occupation", "monthly_income",
+    "educational_qualifications", "family_size", "customer_type",
+    "latitude", "longitude", "pin_code", "feedback", "ordered_again",
+]
+NULL_TOKEN = "<null>"
 
 
 def trim_strings(df: DataFrame) -> DataFrame:
@@ -76,3 +90,28 @@ def clean(df: DataFrame) -> DataFrame:
           .transform(map_income)
           .transform(clean_outcome)
     )
+
+
+def add_record_hash(df: DataFrame) -> DataFrame:
+    """Add `record_hash`: a SHA-256 fingerprint of the respondent's answers, used as the Silver key.
+
+    Nulls become an explicit token so (null, "a") and ("a", null) can't produce the same hash.
+    """
+    parts = [F.coalesce(F.col(c).cast("string"), F.lit(NULL_TOKEN)) for c in HASH_COLUMNS]
+    return df.withColumn("record_hash", F.sha2(F.concat_ws("||", *parts), 256))
+
+
+def dedupe(df: DataFrame) -> DataFrame:
+    """Keep one row per record_hash. Run per batch, so the dropped copies have identical lineage too."""
+    return df.dropDuplicates(["record_hash"])
+
+
+def merge_into_silver(spark: SparkSession, df: DataFrame, target: str) -> None:
+    """Insert rows whose record_hash isn't in Silver yet; existing hashes are left untouched (idempotent)."""
+    if not DeltaTable.isDeltaTable(spark, target):
+        df.write.format("delta").save(target)
+        return
+    (DeltaTable.forPath(spark, target).alias("t")
+        .merge(df.alias("s"), "t.record_hash = s.record_hash")
+        .whenNotMatchedInsertAll()
+        .execute())
