@@ -29,3 +29,38 @@ under-count people. If a respondent ID becomes available, it should replace `rec
 The hash is computed after trimming and standardising, so `"Negative "` and `"Negative"` give the same
 key. Nulls are replaced by an explicit `<null>` token before hashing so that `(null, "a")` and
 `("a", null)` can't collide.
+
+## 3. snake_case column names already in Bronze
+
+Delta Lake rejects column names containing spaces (`Marital Status`, `Pin code`). Bronze applies
+snake_case names **by position** through an explicit all-string schema (`src/food_pipeline/schemas.py`).
+Only the names change; every value stays exactly as received. The alternative, Delta column mapping,
+allows spaces but adds table-protocol requirements for every reader, which isn't worth it here.
+
+## 4. Bronze batch guard checks batch id *and* source file
+
+A rerun or retry must not load the same data twice. Checking only `_batch_id` would miss a retry of the
+same file under a new id (`batch_01_retry`), so Bronze skips a batch when either its id or its source
+file is already present. Limitation: the check and the append are separate steps, so this assumes one
+pipeline run at a time.
+
+## 5. Quarantine instead of failing, with a threshold
+
+Rows failing a DQ rule go to a quarantine table with the names of the rules they broke, so one bad row
+doesn't block the rest and nothing is silently dropped. A condition that evaluates to null counts as a
+failure (SQL three-valued logic would otherwise let it pass). If more than 5% of a batch fails
+(`quality.max_quarantine_ratio` in `config/pipeline.yaml`), the run stops before Silver: that many bad
+rows usually means the source changed, and loading the rest would hide the problem.
+
+## 6. Gold is rebuilt in full
+
+Gold tables are derived entirely from Silver and are small, so every run overwrites them. A full rebuild
+is simple, always consistent with Silver and naturally idempotent. At much larger scale Gold would be
+updated incrementally instead.
+
+## 7. Stable surrogate key for `dim_location`
+
+`location_key = xxhash64(pin_code)`. A hash gives the same key on every rebuild, unlike
+`monotonically_increasing_id()` (changes every run) or `row_number()` over pin codes (shifts when a new
+pin code appears). The trade-off is a theoretical hash collision, which the uniqueness check in
+`notebooks/03_gold_model.ipynb` would reveal.
