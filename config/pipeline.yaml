@@ -1,0 +1,18 @@
+# Pipeline settings. Relative paths are resolved from the project root; absolute paths are used as-is.
+app_name: food-delivery-lakehouse
+
+spark:
+  master: "local[*]"
+  shuffle_partitions: 4
+
+paths:
+  landing: data/raw/landing
+  bronze: lakehouse/bronze/survey_raw
+  quarantine: lakehouse/quarantine/survey
+  silver: lakehouse/silver/survey
+  gold: lakehouse/gold
+
+quality:
+  # Fail the run if a batch quarantines more than this share of its rows:
+  # that many bad rows usually means the source itself is broken.
+  max_quarantine_ratio: 0.05

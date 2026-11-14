@@ -47,5 +47,5 @@ def ingest_batch(spark: SparkSession, path: str, batch_id: str, target: str) -> 
 
     row_count = df.count()
     df.write.format("delta").mode("append").save(target)
-    logger.info("%s: appended %d rows to %s", batch_id, row_count, target)
+    logger.info("%s: appended %d rows to bronze", batch_id, row_count)
     return row_count
